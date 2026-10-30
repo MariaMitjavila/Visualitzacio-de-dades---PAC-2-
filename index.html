@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="ca">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Anomalies de temperatura — Horizon Graph</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; background: #fff; font-family: Arial, Helvetica, sans-serif; color: #172033; }
+  main { max-width: 1220px; margin: 0 auto; padding: 15px 14px 30px; }
+  #chart { width: 100%; overflow: visible; }
+  #chart svg { display: block; width: 100%; height: auto; }
+  #status { text-align: center; font-size: 15px; color: #475569; padding: 25px; }
+  .hint { text-align: center; margin: -4px 0 2px; font-size: 13px; color: #475569; }
+  @media(max-width: 650px){ main { min-width: 0; padding: 8px 2px; } .hint { font-size: 11px; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="hint">Passa el cursor sobre cada franja per consultar les anomalies mensuals.</p>
+  <div id="status" role="status">Carregant les dades climàtiques…</div>
+  <div id="chart" aria-label="Gràfic d'horitzó interactiu de les anomalies mensuals de temperatura a Barcelona, Madrid, València i Sevilla entre 2000 i 2024"></div>
+</main>
+<script type="module">
+import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
+try {
+const dades = await (async () => {
+  const ciutats = [
+    {nom: "Barcelona", lat: 41.39, lon: 2.17},
+    {nom: "Madrid", lat: 40.42, lon: -3.70},
+    {nom: "València", lat: 39.47, lon: -0.38},
+    {nom: "Sevilla", lat: 37.39, lon: -5.99}
+  ];
+
+  const resultats = await Promise.all(
+    ciutats.map(async (ciutat) => {
+      const params = new URLSearchParams({
+        latitude: ciutat.lat,
+        longitude: ciutat.lon,
+        start_date: "1991-01-01",
+        end_date: "2024-12-31",
+        daily: "temperature_2m_mean",
+        models: "era5_land",
+        timezone: "Europe/Madrid"
+      });
+
+      const url =
+        "https://archive-api.open-meteo.com/v1/archive?" +
+        params.toString();
+
+      const resposta = await fetch(url);
+      if (!resposta.ok) {
+        throw new Error("Error obtenint dades: " + ciutat.nom);
+      }
+
+      const json = await resposta.json();
+      if (!json.daily?.temperature_2m_mean) {
+        throw new Error("Dades incompletes: " + ciutat.nom);
+      }
+
+      const diaris = json.daily.time.map((data, i) => ({
+        data,
+        temperatura: json.daily.temperature_2m_mean[i]
+      })).filter(d => Number.isFinite(d.temperatura));
+
+      // Mitjana mensual de les temperatures diàries
+      const mensuals = Array.from(
+        d3.group(diaris, d => d.data.slice(0, 7)),
+        ([mesAny, valors]) => ({
+          any: +mesAny.slice(0, 4),
+          mes: +mesAny.slice(5, 7),
+          data: new Date(mesAny + "-01T00:00:00Z"),
+          temperatura: d3.mean(valors, d => d.temperatura)
+        })
+      );
+
+      // Referència mensual 1991-2020
+      const referencia = d3.rollup(
+        mensuals.filter(d => d.any >= 1991 && d.any <= 2020),
+        valors => d3.mean(valors, d => d.temperatura),
+        d => d.mes
+      );
+
+      // Anomalies visualitzades entre 2000 i 2024
+      return mensuals
+        .filter(d => d.any >= 2000 && d.any <= 2024)
+        .map(d => ({
+          ciutat: ciutat.nom,
+          data: d.data,
+          anomalia: d.temperatura - referencia.get(d.mes)
+        }));
+    })
+  );
+
+  return resultats.flat();
+})();
+
+
+const grafica = (() => {
+
+  const ciutats = [
+    "Barcelona", "Madrid", "València", "Sevilla"
+  ];
+
+  // CONFIGURACIÓ GENERAL
+  const amplada = 1100;
+  const esquerra = 135;
+  const dreta = 35;
+  const superior = 100;
+  const altFila = 85;
+  const separacio = 30;
+  const numBandes = 3;
+
+  const ampladaGraf = amplada - esquerra - dreta;
+  const altura = superior +
+    ciutats.length * (altFila + separacio) + 110;
+
+  // Amplitud de les bandes
+  const maxAnomalia = d3.max(
+    dades, d => Math.abs(d.anomalia)
+  );
+
+  const pas = Math.ceil(
+    maxAnomalia / numBandes * 10
+  ) / 10;
+
+  // ESCALA TEMPORAL
+  const inici = new Date("2000-01-01T00:00:00Z");
+  const final = new Date("2025-01-01T00:00:00Z");
+
+  const x = d3.scaleUtc()
+    .domain([inici, final])
+    .range([0, ampladaGraf]);
+
+  // COLORS
+  const colors = {
+    negatiu: ["#bfdbfe", "#60a5fa", "#1d4ed8"],
+    positiu: ["#fecaca", "#f87171", "#b91c1c"]
+  };
+
+  const svg = d3.create("svg")
+    .attr("viewBox", `0 0 ${amplada} ${altura}`)
+    .attr("width", amplada)
+    .attr(
+      "style",
+      "max-width:100%;height:auto;" +
+      "background:white;font-family:Arial,sans-serif"
+    );
+
+  // TÍTOL
+  svg.append("text")
+    .attr("x", amplada / 2)
+    .attr("y", 32)
+    .attr("text-anchor", "middle")
+    .attr("font-size", 21)
+    .attr("font-weight", "bold")
+    .text(
+      "Anomalies de temperatura en quatre ciutats espanyoles"
+    );
+
+  svg.append("text")
+    .attr("x", amplada / 2)
+    .attr("y", 59)
+    .attr("text-anchor", "middle")
+    .attr("font-size", 14)
+    .attr("fill", "#555")
+    .text(
+      "2000–2024 · Referència 1991–2020 · Horizon Graph"
+    );
+
+  const agrupades = d3.group(dades, d => d.ciutat);
+
+  // DIBUIXAR CADA CIUTAT
+  ciutats.forEach((ciutat, index) => {
+
+    const valors = (agrupades.get(ciutat) || [])
+      .filter(d =>
+        d.data instanceof Date &&
+        !isNaN(d.data) &&
+        Number.isFinite(d.anomalia)
+      )
+      .slice()
+      .sort((a, b) => d3.ascending(a.data, b.data));
+
+    const fila = svg.append("g")
+      .attr(
+        "transform",
+        `translate(${esquerra},${
+          superior + index * (altFila + separacio)
+        })`
+      );
+
+    // Fons de cada sèrie
+    fila.append("rect")
+      .attr("width", ampladaGraf)
+      .attr("height", altFila)
+      .attr("fill", "#f8fafc");
+
+    // BANDES SUPERPOSADES
+    [
+      {tipus: "negatiu", signe: -1},
+      {tipus: "positiu", signe: 1}
+    ].forEach(({tipus, signe}) => {
+
+      for (let banda = 0; banda < numBandes; banda++) {
+
+        const area = d3.area()
+          .defined(d => Number.isFinite(d.anomalia))
+          .x(d => x(d.data))
+          .y0(altFila)
+          .y1(d => {
+
+            const magnitud = Math.max(
+              0, signe * d.anomalia
+            );
+
+            // Plegament de cada banda
+            const fraccio = Math.max(
+              0,
+              Math.min(1, magnitud / pas - banda)
+            );
+
+            return altFila * (1 - fraccio);
+          });
+
+        fila.append("path")
+          .datum(valors)
+          .attr("d", area)
+          .attr("fill", colors[tipus][banda]);
+      }
+    });
+
+    // NOM DE LA CIUTAT
+    fila.append("text")
+      .attr("x", -15)
+      .attr("y", altFila / 2)
+      .attr("text-anchor", "end")
+      .attr("dominant-baseline", "middle")
+      .attr("font-size", 15)
+      .attr("font-weight", "bold")
+      .text(ciutat);
+
+    // LÍNIA INFERIOR
+    fila.append("line")
+      .attr("x1", 0)
+      .attr("x2", ampladaGraf)
+      .attr("y1", altFila)
+      .attr("y2", altFila)
+      .attr("stroke", "#cbd5e1");
+
+    // INTERACTIVITAT
+
+    const formatMes = d3.utcFormat("%m/%Y");
+
+    // Línia vertical que indica el mes seleccionat
+    const marcador = fila.append("line")
+      .attr("y1", 0)
+      .attr("y2", altFila)
+      .attr("stroke", "#334155")
+      .attr("stroke-width", 1.5)
+      .attr("stroke-dasharray", "4,3")
+      .style("display", "none")
+      .style("pointer-events", "none");
+
+    // Requadre informatiu
+    const tooltip = fila.append("g")
+      .style("display", "none")
+      .style("pointer-events", "none");
+
+    tooltip.append("rect")
+      .attr("width", 195)
+      .attr("height", 82)
+      .attr("rx", 7)
+      .attr("fill", "#ffffff")
+      .attr("stroke", "#94a3b8")
+      .attr("stroke-width", 1);
+
+    const tCiutat = tooltip.append("text")
+      .attr("x", 12)
+      .attr("y", 21)
+      .attr("font-size", 14)
+      .attr("font-weight", "bold");
+
+    const tMes = tooltip.append("text")
+      .attr("x", 12)
+      .attr("y", 43)
+      .attr("font-size", 12);
+
+    const tAnomalia = tooltip.append("text")
+      .attr("x", 12)
+      .attr("y", 64)
+      .attr("font-size", 12)
+      .attr("font-weight", "bold");
+
+    // Buscar el mes més proper al cursor
+    const bisector = d3.bisector(d => d.data).center;
+
+    // Zona interactiva per a tota la franja
+    fila.append("rect")
+      .attr("width", ampladaGraf)
+      .attr("height", altFila)
+      .attr("fill", "transparent")
+      .attr("pointer-events", "all")
+      .style("cursor", "crosshair")
+
+      .on("pointerenter", function() {
+        marcador.style("display", null);
+        tooltip.style("display", null);
+      })
+
+      .on("pointermove", function(event) {
+
+        const [mx, my] = d3.pointer(event, this);
+
+        const dataCursor = x.invert(mx);
+
+        const indexMes = bisector(valors, dataCursor);
+
+        const d = valors[
+          Math.max(0, Math.min(valors.length - 1, indexMes))
+        ];
+
+        if (!d) return;
+
+        // Posició de la línia vertical
+        const posX = x(d.data);
+
+        marcador
+          .attr("x1", posX)
+          .attr("x2", posX);
+
+        // Contingut
+        tCiutat.text(ciutat);
+        tMes.text("Mes: " + formatMes(d.data));
+
+        const signe = d.anomalia > 0 ? "+" : "";
+
+        tAnomalia
+          .text(
+            "Anomalia: " +
+            signe +
+            d.anomalia.toFixed(2) +
+            " °C"
+          )
+          .attr(
+            "fill",
+            d.anomalia >= 0 ? "#b91c1c" : "#1d4ed8"
+          );
+
+        // Situar el requadre dins del gràfic
+        const tooltipX =
+          mx + 205 > ampladaGraf
+            ? mx - 205
+            : mx + 10;
+
+        const tooltipY =
+          my + 90 > altFila
+            ? Math.max(0, my - 88)
+            : my + 5;
+
+        tooltip.attr(
+          "transform",
+          `translate(${Math.max(0, tooltipX)},${tooltipY})`
+        );
+
+      })
+
+      .on("pointerleave", function() {
+        marcador.style("display", "none");
+        tooltip.style("display", "none");
+      });
+  });
+
+  // EIX TEMPORAL: acabar amb 2024
+  const anys = [2000, 2005, 2010, 2015, 2020, 2024]
+    .map(any =>
+      new Date(`${any}-01-01T00:00:00Z`)
+    );
+
+  svg.append("g")
+    .attr(
+      "transform",
+      `translate(${esquerra},${
+        superior +
+        (ciutats.length - 1) *
+        (altFila + separacio) +
+        altFila + 14
+      })`
+    )
+    .call(
+      d3.axisBottom(x)
+        .tickValues(anys)
+        .tickFormat(d3.utcFormat("%Y"))
+        .tickSize(5)
+    )
+    .call(g => g.select(".domain").remove());
+
+  // LLEGENDA MILLORADA
+  const llegendaY = altura - 68;
+
+  svg.append("text")
+    .attr("x", esquerra)
+    .attr("y", llegendaY - 17)
+    .attr("font-weight", "bold")
+    .attr("font-size", 13)
+    .text("Intensitat de les anomalies (°C)");
+
+  const llegendes = [
+    ...colors.negatiu.map((color, i) => ({
+      color,
+      text: `Fred ${i + 1}`,
+      rang: `${(i * pas).toFixed(1)}–${
+        ((i + 1) * pas).toFixed(1)
+      } °C`
+    })),
+    ...colors.positiu.map((color, i) => ({
+      color,
+      text: `Calor ${i + 1}`,
+      rang: `${(i * pas).toFixed(1)}–${
+        ((i + 1) * pas).toFixed(1)
+      } °C`
+    }))
+  ];
+
+  llegendes.forEach((d, i) => {
+
+    const g = svg.append("g")
+      .attr(
+        "transform",
+        `translate(${esquerra + i * 150},${llegendaY})`
+      );
+
+    g.append("rect")
+      .attr("width", 18)
+      .attr("height", 18)
+      .attr("rx", 3)
+      .attr("fill", d.color);
+
+    g.append("text")
+      .attr("x", 25)
+      .attr("y", 8)
+      .attr("font-size", 12)
+      .attr("font-weight", "bold")
+      .text(d.text);
+
+    g.append("text")
+      .attr("x", 25)
+      .attr("y", 23)
+      .attr("font-size", 10)
+      .attr("fill", "#555")
+      .text(d.rang);
+  });
+
+  // FONT
+  svg.append("text")
+    .attr("x", esquerra)
+    .attr("y", altura - 12)
+    .attr("font-size", 11)
+    .attr("fill", "#555")
+    .text(
+      "Font: Open-Meteo / ERA5-Land · " +
+      "Elaboració pròpia amb Observable i D3.js - Maria Mitjavila"
+    );
+
+  return svg.node();
+
+})();
+
+document.getElementById("chart").replaceChildren(grafica);
+  document.getElementById("status").remove();
+} catch (error) {
+  console.error(error);
+  const status = document.getElementById("status");
+  status.textContent = "No s'han pogut carregar les dades climàtiques. Comprova la connexió i torna a carregar la pàgina.";
+  status.style.color = "#b91c1c";
+}
+</script>
+</body>
+</html>
